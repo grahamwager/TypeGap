@@ -1,4 +1,4 @@
-﻿using TypeGap.Extensions;
+using TypeGap.Extensions;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -15,6 +15,7 @@ namespace TypeGap
         private readonly string _globalNamespace;
         private readonly TypeScriptFluent _fluent;
         private static readonly Dictionary<Type, string> _cache;
+        private readonly Dictionary<Type, string> _customConversions;
 
         static TypeConverter()
         {
@@ -43,10 +44,11 @@ namespace TypeGap
             _cache.Add(typeof(void), "void");
         }
 
-        public TypeConverter(string globalNamespace, TypeScriptFluent fluent)
+        public TypeConverter(string globalNamespace, TypeScriptFluent fluent, Dictionary<Type, string> customConversions)
         {
             _globalNamespace = globalNamespace;
             _fluent = fluent;
+            _customConversions = customConversions;
         }
 
         public static bool IsComplexType(Type clrType)
@@ -62,13 +64,20 @@ namespace TypeGap
             if (tsMember != null)
                 moduleName = tsMember.Module.Name + "." + tsMember.Name;
 
-            return String.IsNullOrEmpty(_globalNamespace) ? (moduleName ?? clrType.FullName) : _globalNamespace + "." + clrType.Name;
+            var fullName = String.IsNullOrEmpty(_globalNamespace) ? (moduleName ?? clrType.FullName) : _globalNamespace + "." + clrType.Name;
+
+            // remove e.g. `1 from the names of generic types
+            var backTick = fullName.IndexOf('`');
+            if (backTick > 0)
+            {
+                fullName = fullName.Remove(backTick);
+            }
+
+            return fullName;
         }
 
-        public string GetTypeScriptName(Type clrType)
+        public Type UnwrapType(Type clrType)
         {
-            string result;
-
             if (clrType.IsNullable())
             {
                 clrType = clrType.GetUnderlyingNullableType();
@@ -77,6 +86,20 @@ namespace TypeGap
             if (clrType.IsGenericTask())
             {
                 clrType = clrType.GetUnderlyingTaskType();
+            }
+
+            return clrType;
+        }
+
+        public string GetTypeScriptName(Type clrType)
+        {
+            string result;
+
+            clrType = UnwrapType(clrType);
+
+            if (_customConversions != null && _customConversions.TryGetValue(clrType, out result))
+            {
+                return result;
             }
 
             if (_cache.TryGetValue(clrType, out result))
@@ -124,14 +147,14 @@ namespace TypeGap
                 return "any[]";
             }
 
-            if (clrType.Namespace.StartsWith("System."))
-                return "any";
-
             if (clrType.GetDnxCompatible().IsEnum)
             {
                 _fluent.ModelBuilder.Add(clrType);
                 return GetFullName(clrType);
             }
+
+            if (clrType.Namespace == "System" || clrType.Namespace.StartsWith("System."))
+                return "any";
 
             if (clrType.GetDnxCompatible().IsClass || clrType.GetDnxCompatible().IsInterface)
             {
